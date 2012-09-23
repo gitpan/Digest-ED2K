@@ -8,17 +8,24 @@ use Module::Build 0.3601;
 my %module_build_args = (
 	module_name   => 'Digest::ED2K',
 	create_readme => 1,
-	license       => 'isc',
+	create_license => 1,
+	license       => 'artistic_2',
 	build_requires => {
 		'Test::More'     => 0,
 	},
+	configure_requires => {
+		'version'        => '0.77',
+	},
+	meta_merge => {
+		resources => {
+			repository => 'https://github.com/Kulag/Digest-ED2K',
+		},
+	},
 	requires      => {
 		'perl'           => '5.08.0',
-		'base'           => '0',
-		'Carp'           => '0',
 		'common::sense'  => '0',
+		'Digest::base'   => '1.03',
 		'Digest::MD4'    => '0',
-		'version'        => '0.77',
 	},
 );
 

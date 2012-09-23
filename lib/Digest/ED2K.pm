@@ -1,134 +1,193 @@
 package Digest::ED2K;
-use base qw(Digest::base);
 use common::sense;
-use Digest::MD4;
+use Digest::MD4 ();
 use Exporter 'import';
 our @EXPORT_OK = qw(ed2k ed2k_hex ed2k_base64);
-use version 0.77; our $VERSION = version->declare('v1.0');
 
-use constant CHUNK_SIZE => 9728000;
+use Digest::base 1.03;
+BEGIN { push @Digest::ED2K::ISA, 'Digest::base' }
+
+use version 0.77; our $VERSION = version->declare('v1.1');
+
+sub CHUNK_SIZE() { 9728000 }
 
 sub new {
 	my $class = shift;
 	bless {
-		ctx => Digest::MD4->new,
-		blocks => 0,
-		buffer => '',
-		_digest => undef,
-	}, ref($class) || $class;
+		chunk_ctx => Digest::MD4->new,
+	}, ref $class || $class;
 }
 
 sub clone {
 	my $self = shift;
 	bless {
-		ctx => $self->{ctx}->clone,
-		blocks => $self->{blocks},
-		buffer => $self->{buffer},
-		_digest => $self->{_digest},
+		($self->{ctx} ? (ctx => $self->{ctx}->clone) : ()),
+		chunk_ctx => $self->{chunk_ctx}->clone,
+		chunk_length => $self->{chunk_length},
 	}, ref($self);
 }
 
 sub add {
+	return shift->add(join '', @_) if @_ > 2;
+
 	my $self = shift;
-	if(defined $self->{_digest}) {
-		require Carp;
-		Carp::croak("Can't add to a ed2k digest after it's been finalized. Please reset the object if you wish to reuse it.");
+
+	# Adding buffer won't cross chunk border.
+	# Avoid copying.
+	if (CHUNK_SIZE - $self->{chunk_length} > length $_[0]) {
+		$self->{chunk_ctx}->add($_[0]);
+		$self->{chunk_length} += length $_[0];
+
+		return $self;
 	}
-	$self->{buffer} .= join '', @_;
-	while(length($self->{buffer}) >= CHUNK_SIZE) {
-		$self->{ctx}->add(Digest::MD4->new->add(substr($self->{buffer}, 0, CHUNK_SIZE))->digest);
-		$self->{buffer} = substr($self->{buffer}, CHUNK_SIZE);
-		$self->{blocks}++;
+
+	# Buffer crosses chunk border, copy for modification.
+	my $buffer = shift;
+
+	while ($buffer) {
+		my $need_length = CHUNK_SIZE - $self->{chunk_length};
+
+		my $substr = substr $buffer, 0, $need_length;
+		$self->{chunk_ctx}->add($substr);
+		$self->{chunk_length} += length $substr;
+
+		# Completed chunk
+		if ($self->{chunk_length} == CHUNK_SIZE) {
+			my $ctx = $self->{ctx} ||= Digest::MD4->new;
+
+			$ctx->add( $self->{chunk_ctx}->digest );
+			$self->{chunk_length} = 0;
+		}
+
+		$buffer = substr $buffer, $need_length;
 	}
-	$self;
+
+	return $self;
 }
 
 sub digest {
 	my $self = shift;
-	return $self->{_digest} if defined $self->{_digest};
-	if(!$self->{blocks}) {
-		$self->{_digest} = Digest::MD4->new->add($self->{buffer})->digest;
-	}
-	else {
-		$self->{ctx}->add(Digest::MD4->new->add($self->{buffer})->digest);
-		$self->{buffer} = '';
-		$self->{_digest} = $self->{ctx}->digest;
-	}
-	return $self->{_digest};
+	my ($ctx, $chunk_ctx) = delete @$self{qw( ctx chunk_ctx chunk_length )};
+	$self->{chunk_ctx} = Digest::MD4->new;
+
+	# One chunk
+	return $chunk_ctx->digest unless $ctx;
+
+	# Multi chunk
+	$ctx->add( $chunk_ctx->digest )->digest;
 }
 
-sub ed2k($) {
+sub ed2k(@) {
 	Digest::ED2K->new->add(@_)->digest;
 }
 
-sub ed2k_hex($) {
+sub ed2k_hex(@) {
 	Digest::ED2K->new->add(@_)->hexdigest;
 }
 
-sub ed2k_base64($) {
+sub ed2k_base64(@) {
 	Digest::ED2K->new->add(@_)->b64digest;
 }
 
-1;
+0x6B63;
 __END__
 
 =head1 NAME
 
-Digest::ED2K - Perl implementation of the ED2k hash used in ED2K URIs
+Digest::ED2K - Calculate ED2K digests
 
 =head1 SYNOPSIS
 
- # Functional style
- use Digest::ED2K qw(ed2k ed2k_hex ed2k_base64);
+	# Functional
+	use Digest::ED2K qw(ed2k ed2k_hex ed2k_base64);
 
- $hash = ed2k $data;
- $hash = ed2k_hex $data;
- $hash = ed2k_base64 $data;
+	my $digest = ed2k $data;
+	my $hexdigest = ed2k_hex $data
+	my $base64_digest = ed2k_base64 $data;
 
+	# Object Oriented
+	use Digest::ED2K;
 
- # OO style
- use Digest::ED2K;
+	my $ctx = Digest::ED2K->new;
 
- $ctx = Digest::ED2K->new;
+	$ctx->add($bytes);
+	$ctx->addfile(*FILE);
 
- $ctx->add($data);
- $ctx->addfile(*FILE);
-
- $digest = $ctx->digest;
- $digest = $ctx->hexdigest;
- $digest = $ctx->b64digest;
+	my $digest = $ctx->digest;
+	my $hexdigest = $ctx->hexdigest;
+	my $base64_digest = $ctx->b64digest;
 
 =head1 DESCRIPTION
 
-This module allows you to use the ED2K hash algorithm from within Perl programs.
-It has the same interface as L<Digest>.
+L<Digest::ED2K> progressively calculates ED2K digests of data.
 
-=head1 SEE ALSO
+=head1 FUNCTIONS
 
-L<Exporter::Tiny> for additional import options.
+L<Digest::ED2K> implements the following functions.
 
-=head1 AUTHORS
+=head2 C<ed2k>
 
-Benjamin Herweyer <benjamin.herweyer@gmail.com>
+	my $digest = ed2k $bytes, ...;
 
-=head1 LICENSE
+Generate binary ED2K digest for string.
 
-Copyright (c) 2010, Kulag <g.kulag@gmail.com>
+=head2 C<ed2k_hex>
 
-Permission to use, copy, modify, and/or distribute this software for any
-purpose with or without fee is hereby granted, provided that the above
-copyright notice and this permission notice appear in all copies.
+	my $hexdigest = ed2k_hex $bytes, ...;
 
-THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
-WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
-MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
-ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
-WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
-ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
-OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+Generate hex ED2K digest for string.
+
+=head2 C<ed2k_base64>
+
+	my $base64_digest = ed2k_base64 $bytes, ...;
+
+Generate base64 ED2K digest for string.
+
+=head1 METHODS
+
+L<Digest::ED2K> inherits all methods from L<Digest::base> (See L<Digest> for
+documentation) and implements the following new ones.
+
+=head2 C<new>
+
+	my $ctx = Digest->new('ED2K');
+	my $ctx = Digest::ED2K->new;
+
+Construct a new L<Digest::ED2K> object.
+
+=head2 C<add>
+
+	$ctx = $ctx->add($bytes, ...);
+
+Append binary data.
+
+=head2 C<clone>
+
+	my $ctx_clone = $ctx->clone;
+
+Clone this message context.
+
+=head2 C<digest>
+
+	my $digest = $ctx->digest;
+
+Binary ED2K digest for this message context.
 
 =head1 REPOSITORY
 
 http://github.com/Kulag/Digest-ED2K
 
-=cut
+=head1 SEE ALSO
+
+L<Digest>, L<Digest::MD4>
+
+=head1 AUTHOR
+
+Benjamin Herweyer <benjamin.herweyer@gmail.com>
+
+=head1 COPYRIGHT AND LICENSE
+
+Copyright (C) 2011-2012, Benjamin Herweyer.
+
+This program is free software, you can redistribute it and/or modify it under
+the terms of the Artistic License version 2.0.
